@@ -94,7 +94,7 @@ func Format(src []byte) ([]byte, error) {
 // Something acceptable for kernel developers and email-friendly.
 var style = `{
 BasedOnStyle: LLVM,
-IndentWidth: 2,
+IndentWidth: 4,
 UseTab: Never,
 BreakBeforeBraces: Linux,
 IndentCaseLabels: false,
