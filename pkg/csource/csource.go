@@ -26,6 +26,7 @@ package csource
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"regexp"
 	"sort"
 	"strings"
@@ -48,13 +49,13 @@ func Write(p *prog.Prog, opts Options) ([]byte, error) {
 		calls:     make(map[string]uint64),
 	}
 
-	calls, vars, err := ctx.generateProgCalls(ctx.p, opts.Trace)
+	calls, vars, err := ctx.generateProgCalls(ctx.p, opts.Trace, true)
 	if err != nil {
 		return nil, err
 	}
 
 	mmapProg := p.Target.DataMmapProg()
-	mmapCalls, _, err := ctx.generateProgCalls(mmapProg, false)
+	mmapCalls, _, err := ctx.generateProgCalls(mmapProg, false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +180,7 @@ func (ctx *context) generateSyscallDefines() string {
 	return buf.String()
 }
 
-func (ctx *context) generateProgCalls(p *prog.Prog, trace bool) ([]string, []uint64, error) {
+func (ctx *context) generateProgCalls(p *prog.Prog, trace bool, symbolic bool) ([]string, []uint64, error) {
 	exec := make([]byte, prog.ExecBufferSize)
 	progSize, err := p.SerializeForExec(exec)
 	if err != nil {
@@ -189,18 +190,19 @@ func (ctx *context) generateProgCalls(p *prog.Prog, trace bool) ([]string, []uin
 	if err != nil {
 		return nil, nil, err
 	}
-	calls, vars := ctx.generateCalls(decoded, trace)
+	calls, vars := ctx.generateCalls(decoded, trace, symbolic)
 	return calls, vars, nil
 }
 
-func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint64) {
+func (ctx *context) generateCalls(p prog.ExecProg, trace bool, symbolic bool) ([]string, []uint64) {
 	var calls []string
 	csumSeq := 0
 	for ci, call := range p.Calls {
 		w := new(bytes.Buffer)
+		b := new(bytes.Buffer)
 		// Copyin.
 		for _, copyin := range call.Copyin {
-			ctx.copyin(w, &csumSeq, copyin)
+			ctx.copyin(w, b, &csumSeq, copyin)
 		}
 
 		if ctx.opts.Fault && ctx.opts.FaultCall == ci {
@@ -217,7 +219,7 @@ func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint
 		// TODO: if we don't emit the call we must also not emit copyin, copyout and fault injection.
 		// However, simply skipping whole iteration breaks tests due to unused static functions.
 		if emitCall {
-			ctx.emitCall(w, call, ci, resCopyout || argCopyout, trace)
+			ctx.emitCall(w, b, call, ci, resCopyout || argCopyout, trace, symbolic)
 		} else if trace {
 			fmt.Fprintf(w, "\t(void)res;\n")
 		}
@@ -226,12 +228,16 @@ func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint
 		if resCopyout || argCopyout {
 			ctx.copyout(w, call, resCopyout)
 		}
+		if symbolic{
+			calls = append(calls, b.String())
+		}
 		calls = append(calls, w.String())
+		calls = append(calls, "\n")
 	}
 	return calls, p.Vars
 }
 
-func (ctx *context) emitCall(w *bytes.Buffer, call prog.ExecCall, ci int, haveCopyout, trace bool) {
+func (ctx *context) emitCall(w *bytes.Buffer, b *bytes.Buffer, call prog.ExecCall, ci int, haveCopyout, trace bool, symbolic bool) {
 	callName := call.Meta.CallName
 	_, trampoline := ctx.sysTarget.SyscallTrampolines[callName]
 	native := ctx.sysTarget.SyscallNumbers && !strings.HasPrefix(callName, "syz_") && !trampoline
@@ -251,7 +257,7 @@ func (ctx *context) emitCall(w *bytes.Buffer, call prog.ExecCall, ci int, haveCo
 	if haveCopyout || trace {
 		fmt.Fprintf(w, "res = ")
 	}
-	ctx.emitCallBody(w, call, native)
+	ctx.emitCallBody(w, b, call, ci, native, symbolic)
 	if !native {
 		fmt.Fprintf(w, ")") // close NONFAILING macro
 	}
@@ -272,7 +278,7 @@ func (ctx *context) emitCall(w *bytes.Buffer, call prog.ExecCall, ci int, haveCo
 	}
 }
 
-func (ctx *context) emitCallBody(w *bytes.Buffer, call prog.ExecCall, native bool) {
+func (ctx *context) emitCallBody(w *bytes.Buffer, b *bytes.Buffer, call prog.ExecCall, ci int, native bool, symbolic bool) {
 	callName, ok := ctx.sysTarget.SyscallTrampolines[call.Meta.CallName]
 	if !ok {
 		callName = call.Meta.CallName
@@ -297,7 +303,19 @@ func (ctx *context) emitCallBody(w *bytes.Buffer, call prog.ExecCall, native boo
 			if arg.Format != prog.FormatNative && arg.Format != prog.FormatBigEndian {
 				panic("sring format in syscall argument")
 			}
-			fmt.Fprintf(w, "%v", ctx.constArgToStr(arg, true, native))
+			var isCopyin = false
+			for _, copyin := range call.Copyin {
+				if arg.Value == copyin.Addr {
+					isCopyin = true
+				}
+			}
+			if symbolic && !isCopyin {
+				vname := fmt.Sprintf("c%v_%v", ci, ai)
+				fmt.Fprintf(b, "%v", ctx.constArgToSym(vname, arg, true, native))
+				fmt.Fprintf(w, "*(uint%d *)%s", arg.Size*8, vname)
+			}else{
+				fmt.Fprintf(w, "%v", ctx.constArgToStr(arg, true, native))
+			}
 		case prog.ExecArgResult:
 			if arg.Format != prog.FormatNative && arg.Format != prog.FormatBigEndian {
 				panic("sring format in syscall argument")
@@ -342,11 +360,11 @@ func (ctx *context) generateCsumInet(w *bytes.Buffer, addr uint64, arg prog.Exec
 		addr, csumSeq)
 }
 
-func (ctx *context) copyin(w *bytes.Buffer, csumSeq *int, copyin prog.ExecCopyin) {
+func (ctx *context) copyin(w *bytes.Buffer, b *bytes.Buffer, csumSeq *int, copyin prog.ExecCopyin) {
 	switch arg := copyin.Arg.(type) {
 	case prog.ExecArgConst:
 		if arg.BitfieldOffset == 0 && arg.BitfieldLength == 0 {
-			ctx.copyinVal(w, copyin.Addr, arg.Size, ctx.constArgToStr(arg, true, false), arg.Format)
+			ctx.copyinVal(w, b, copyin.Addr, arg.Size, ctx.constArgToStr(arg, true, false), arg.Format)
 		} else {
 			if arg.Format != prog.FormatNative && arg.Format != prog.FormatBigEndian {
 				panic("bitfield+string format")
@@ -362,9 +380,12 @@ func (ctx *context) copyin(w *bytes.Buffer, csumSeq *int, copyin prog.ExecCopyin
 			fmt.Fprintf(w, "\tNONFAILING(STORE_BY_BITMASK(uint%v, %v, 0x%x, %v, %v, %v));\n",
 				arg.Size*8, htobe, copyin.Addr, ctx.constArgToStr(arg, false, false),
 				bitfieldOffset, arg.BitfieldLength)
+			fmt.Fprintf(w, "s2e_make_symbolic((void*)0x%x, %d, %q);\n",
+				copyin.Addr+bitfieldOffset, arg.BitfieldLength,
+				"mem_0x"+strconv.FormatUint(copyin.Addr, 16)+"_bm")
 		}
 	case prog.ExecArgResult:
-		ctx.copyinVal(w, copyin.Addr, arg.Size, ctx.resultArgToStr(arg), arg.Format)
+		ctx.copyinVal(w, b, copyin.Addr, arg.Size, ctx.resultArgToStr(arg), arg.Format)
 	case prog.ExecArgData:
 		fmt.Fprintf(w, "\tNONFAILING(memcpy((void*)0x%x, \"%s\", %v));\n",
 			copyin.Addr, toCString(arg.Data, arg.Readable), len(arg.Data))
@@ -381,10 +402,11 @@ func (ctx *context) copyin(w *bytes.Buffer, csumSeq *int, copyin prog.ExecCopyin
 	}
 }
 
-func (ctx *context) copyinVal(w *bytes.Buffer, addr, size uint64, val string, bf prog.BinaryFormat) {
+func (ctx *context) copyinVal(w *bytes.Buffer, b *bytes.Buffer, addr, size uint64, val string, bf prog.BinaryFormat) {
 	switch bf {
 	case prog.FormatNative, prog.FormatBigEndian:
 		fmt.Fprintf(w, "\tNONFAILING(*(uint%v*)0x%x = %v);\n", size*8, addr, val)
+		fmt.Fprintf(w, "s2e_make_symbolic((void*)0x%x, %d, %q);\n", addr, size, "mem_0x"+strconv.FormatUint(addr, 16))
 	case prog.FormatStrDec:
 		if size != 20 {
 			panic("bad strdec size")
@@ -475,6 +497,14 @@ func (ctx *context) constArgToStr(arg prog.ExecArgConst, handleBigEndian, native
 	return val
 }
 
+func (ctx *context) constArgToSym(vname string, arg prog.ExecArgConst, handleBigEndian, native bool) string {
+	val := new(bytes.Buffer)
+	fmt.Fprintf(val, "void* %v = malloc(%v);\n", vname, arg.Size)
+	fmt.Fprintf(val, "*(uint%d *)%s = %v;\n", arg.Size*8, vname, ctx.constArgToStr(arg, handleBigEndian, native))
+	fmt.Fprintf(val, "s2e_make_symbolic(%s, %d, %q);\n", vname, arg.Size, vname)
+	return val.String()
+}
+
 func (ctx *context) resultArgToStr(arg prog.ExecArgResult) string {
 	res := fmt.Sprintf("r[%v]", arg.Index)
 	if arg.DivOp != 0 {
@@ -535,6 +565,7 @@ func (ctx *context) hoistIncludes(result []byte) []byte {
 	sort.Strings(sortedTop)
 	sort.Strings(sorted)
 	sort.Strings(sortedBottom)
+	sortedBottom = append(sortedBottom, "#include <s2e.h>\n")
 	newResult := append([]byte{}, result[:includesStart]...)
 	newResult = append(newResult, strings.Join(sortedTop, "")...)
 	newResult = append(newResult, '\n')
