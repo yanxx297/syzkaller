@@ -23,3 +23,5 @@ dashboard/app/.gcloudignore
 
 # jetbrains goland
 .idea
+
+tags
