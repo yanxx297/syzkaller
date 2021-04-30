@@ -26,9 +26,9 @@ package csource
 import (
 	"bytes"
 	"fmt"
-	"strconv"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -228,7 +228,7 @@ func (ctx *context) generateCalls(p prog.ExecProg, trace bool, symbolic bool) ([
 		if resCopyout || argCopyout {
 			ctx.copyout(w, call, resCopyout)
 		}
-		if symbolic{
+		if symbolic {
 			calls = append(calls, b.String())
 		}
 		calls = append(calls, w.String())
@@ -303,11 +303,11 @@ func (ctx *context) emitCallBody(w *bytes.Buffer, b *bytes.Buffer, call prog.Exe
 			if arg.Format != prog.FormatNative && arg.Format != prog.FormatBigEndian {
 				panic("sring format in syscall argument")
 			}
-			if symbolic{
-				vname := fmt.Sprintf("c%v_%v", ci, ai) 
+			if symbolic {
+				vname := fmt.Sprintf("c%v_%v", ci, ai)
 				fmt.Fprintf(b, "%v", ctx.constArgToSym(vname, arg, true, native))
 				fmt.Fprintf(w, "*(uint%d *)%s", arg.Size*8, vname)
-			}else{
+			} else {
 				fmt.Fprintf(w, "%v", ctx.constArgToStr(arg, true, native))
 			}
 		case prog.ExecArgResult:
@@ -376,8 +376,8 @@ func (ctx *context) copyin(w *bytes.Buffer, b *bytes.Buffer, csumSeq *int, copyi
 				bitfieldOffset, arg.BitfieldLength)
 			if ctx.opts.Symbolic {
 				fmt.Fprintf(w, "s2e_make_symbolic((void*)0x%x, %d, %q);\n",
-				copyin.Addr+bitfieldOffset, arg.BitfieldLength,
-				"mem_0x"+strconv.FormatUint(copyin.Addr, 16)+"_bm")
+					copyin.Addr+bitfieldOffset, arg.BitfieldLength,
+					"mem_0x"+strconv.FormatUint(copyin.Addr, 16)+"_bm")
 			}
 		}
 	case prog.ExecArgResult:
@@ -563,7 +563,9 @@ func (ctx *context) hoistIncludes(result []byte) []byte {
 	sort.Strings(sortedTop)
 	sort.Strings(sorted)
 	sort.Strings(sortedBottom)
-	sortedBottom = append(sortedBottom, "#include <s2e.h>\n")
+	if ctx.opts.Symbolic {
+		sortedBottom = append(sortedBottom, "#include <s2e.h>\n")
+	}
 	newResult := append([]byte{}, result[:includesStart]...)
 	newResult = append(newResult, strings.Join(sortedTop, "")...)
 	newResult = append(newResult, '\n')
