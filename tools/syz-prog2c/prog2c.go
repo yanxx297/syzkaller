@@ -35,6 +35,7 @@ var (
 	flagRepro      = flag.Bool("repro", false, "add heartbeats used by pkg/repro")
 	flagStrict     = flag.Bool("strict", false, "parse input program in strict mode")
 	flagLeak       = flag.Bool("leak", false, "do leak checking")
+	flagSymbolic   = flag.Bool("symbolic", false, "generate code for s2e symbolic execution")
 	flagEnable     = flag.String("enable", "none", "enable only listed additional features")
 	flagDisable    = flag.String("disable", "none", "enable all additional features except listed")
 )
@@ -84,6 +85,7 @@ func main() {
 		FaultCall:     *flagFaultCall,
 		FaultNth:      *flagFaultNth,
 		Leak:          *flagLeak,
+		Symbolic:      *flagSymbolic,
 		NetInjection:  features["tun"].Enabled,
 		NetDevices:    features["net_dev"].Enabled,
 		NetReset:      features["net_reset"].Enabled,

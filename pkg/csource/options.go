@@ -31,6 +31,7 @@ type Options struct {
 	FaultNth  int  `json:"fault_nth,omitempty"`
 
 	Leak bool `json:"leak,omitempty"` // do leak checking
+	Symbolic bool `json:"symbolic"`
 
 	// These options allow for a more fine-tuned control over the generated C code.
 	NetInjection  bool `json:"tun,omitempty"`

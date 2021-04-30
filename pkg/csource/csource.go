@@ -49,7 +49,7 @@ func Write(p *prog.Prog, opts Options) ([]byte, error) {
 		calls:     make(map[string]uint64),
 	}
 
-	calls, vars, err := ctx.generateProgCalls(ctx.p, opts.Trace, true)
+	calls, vars, err := ctx.generateProgCalls(ctx.p, opts.Trace, ctx.opts.Symbolic)
 	if err != nil {
 		return nil, err
 	}
@@ -374,9 +374,11 @@ func (ctx *context) copyin(w *bytes.Buffer, b *bytes.Buffer, csumSeq *int, copyi
 			fmt.Fprintf(w, "\tNONFAILING(STORE_BY_BITMASK(uint%v, %v, 0x%x, %v, %v, %v));\n",
 				arg.Size*8, htobe, copyin.Addr, ctx.constArgToStr(arg, false, false),
 				bitfieldOffset, arg.BitfieldLength)
-			fmt.Fprintf(w, "s2e_make_symbolic((void*)0x%x, %d, %q);\n",
+			if ctx.opts.Symbolic {
+				fmt.Fprintf(w, "s2e_make_symbolic((void*)0x%x, %d, %q);\n",
 				copyin.Addr+bitfieldOffset, arg.BitfieldLength,
 				"mem_0x"+strconv.FormatUint(copyin.Addr, 16)+"_bm")
+			}
 		}
 	case prog.ExecArgResult:
 		ctx.copyinVal(w, b, copyin.Addr, arg.Size, ctx.resultArgToStr(arg), arg.Format)
@@ -400,7 +402,9 @@ func (ctx *context) copyinVal(w *bytes.Buffer, b *bytes.Buffer, addr, size uint6
 	switch bf {
 	case prog.FormatNative, prog.FormatBigEndian:
 		fmt.Fprintf(w, "\tNONFAILING(*(uint%v*)0x%x = %v);\n", size*8, addr, val)
-		fmt.Fprintf(w, "s2e_make_symbolic((void*)0x%x, %d, %q);\n", addr, size, "mem_0x"+strconv.FormatUint(addr, 16))
+		if ctx.opts.Symbolic {
+			fmt.Fprintf(w, "s2e_make_symbolic((void*)0x%x, %d, %q);\n", addr, size, "mem_0x"+strconv.FormatUint(addr, 16))
+		}
 	case prog.FormatStrDec:
 		if size != 20 {
 			panic("bad strdec size")
