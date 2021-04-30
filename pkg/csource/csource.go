@@ -303,14 +303,8 @@ func (ctx *context) emitCallBody(w *bytes.Buffer, b *bytes.Buffer, call prog.Exe
 			if arg.Format != prog.FormatNative && arg.Format != prog.FormatBigEndian {
 				panic("sring format in syscall argument")
 			}
-			var isCopyin = false
-			for _, copyin := range call.Copyin {
-				if arg.Value == copyin.Addr {
-					isCopyin = true
-				}
-			}
-			if symbolic && !isCopyin {
-				vname := fmt.Sprintf("c%v_%v", ci, ai)
+			if symbolic{
+				vname := fmt.Sprintf("c%v_%v", ci, ai) 
 				fmt.Fprintf(b, "%v", ctx.constArgToSym(vname, arg, true, native))
 				fmt.Fprintf(w, "*(uint%d *)%s", arg.Size*8, vname)
 			}else{
